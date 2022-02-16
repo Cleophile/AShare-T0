@@ -17,12 +17,11 @@ def macd(x, short, long, mid):
     dea = expo_ma(dif, mid)
     return (dif - dea) * 2
 
-def fake_factor(x, ic, df=4):
+def fake_factor(x, ic, df=5):
     # factor = ic * x + y
     #  x = np.array(x)
 
     var_x = np.std(x, ddof=1) ** 2
-    var_y = (1 - ic * ic) * var_x
 
     #  original_var = df / (df - 2)
     y0 = np.random.standard_t(df, size=len(x))
@@ -31,10 +30,12 @@ def fake_factor(x, ic, df=4):
     a = - cov_xy0 / var_x
     y0 = y0 + a * x
 
+    k = ic * ic
     original_var = np.var(y0)
+    var_y = (1 - ic * ic) * ic * ic * var_x
     y = y0 / np.sqrt(original_var) * np.sqrt(var_y)
 
-    signal = ic * x + y
+    signal = ic * ic * x + y
 
     return signal
 
@@ -45,12 +46,12 @@ if __name__ == "__main__":
 
     #  dta['signal'] = fake_factor(dta['log_return'].dropna(), 0.05)
     l = []
-    for i in range(1000):
+    for i in range(1):
         dta['signal'] = fake_factor(dta['log_return'].dropna(), 0.15)
         dta.dropna(axis=0, subset=['log_return', 'signal'], inplace=True)
 
         #  print(dta.head())
-        #  print(daily_ic(dta['log_return'], dta['signal']))
+        print(daily_ic(dta['log_return'], dta['signal']))
         pp = prediction_power(dta['log_return'], dta['signal'])
         cs = cumsum(dta['log_return'], dta['signal'])
         l.append(pp)
