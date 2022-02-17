@@ -10,6 +10,7 @@
 import numpy as np
 import pandas as pd
 from calc_factors import fake_factor
+from factor_check import daily_ic
 
 Transaction_Cost = 0.00164
 open_time = 93100
@@ -137,16 +138,20 @@ class Account():
         for order in self.order_book:
             if order.status != 1:
                 continue
-            if second_diff(order.send_time, current_time) < 60:
+            passed_time = second_diff(order.send_time, current_time)
+            print(passed_time)
+            if passed_time < 58:
                 continue
             if order.direction == 1:
-                if signal > self.threshold + self.fee:
+                #  if signal > self.threshold + self.fee:
+                if signal > self.threshold:
                     order.send_time = current_time
                 else:
                     order.status = 2
                 continue
             if order.direction == -1:
-                if signal < -self.threshold - self.fee:
+                #  if signal < -self.threshold - self.fee:
+                if signal < -self.threshold:
                     order.send_time = current_time
                 else:
                     order.status = 2
@@ -229,6 +234,7 @@ class Exchange():
                 for i in range(1, 6):
                     price = market["pa{}".format(i)]
                     quantity = market["va{}".format(i)]
+                    print(price, order.original_price)
                     if price is None or quantity is None:
                         continue
                     if np.isnan(price) or price==0.0 or np.isnan(quantity) or quantity==0.0:
@@ -293,46 +299,53 @@ def parse_time(s):
     t = hour + minute + second
     return int(t)
 
+def stock_simulation(full_data : pd.DataFrame, day, per_order, poslimit, ic, daily_limit=None, df=5):
+    dta = full_data[full_data['date'] == day].copy()
+    dta['ret'] = dta['log_price'].shift(-20) - dta['log_price']
+
+    dta = dta[((dta['time'] > open_time) & (dta['time'] < morning_close)) | ((dta['time'] > afternoon_open) & (dta['time'] < close_time))].copy()
+    dta = dta[~dta['ret'].isin([np.inf, -np.inf, np.nan])]
+
+    dta['signal'] = fake_factor(dta['ret'], ic, df=df)
+    print("IC:", daily_ic(dta['ret'], dta['signal']))
+    dta['minute'] = dta['time'] // 100
+
+    print(dta)
+
+    first_second = dta.groupby(['minute']).first()['trade_time'].copy()
+    first_second = pd.DataFrame(first_second, columns=['trade_time'])
+    first_second['is_first'] = 1
+    dta = dta.merge(first_second, on='trade_time', how='left')
+
+    account = Account(per_order=per_order, poslimit=poslimit, daily_limit=daily_limit, threshold=0.00)
+    exchange = Exchange()
+    for _, market in dta.iterrows():
+        if market['is_first'] == 1:
+            account.can_send(market['signal'], market)
+            exchange.can_fill(account, market)
+        account.will_exaust(market['signal'], market)
+        exchange.can_fill(account, market)
+    print("------------------")
+    for order in account.order_book:
+        print(order)
+        print("------------------")
+
+    pnl_result = [i.pnl for i in account.order_book]
+    cost_result = [i.position_cost for i in account.order_book]
+    total_pnl = sum(pnl_result)
+    print(account.total_pos)
+    total_cost = sum(cost_result)
+    return {'total_pnl' : total_pnl, 'total_position': account.total_pos, 'money_used': total_cost, 'return_rate': total_pnl / total_cost * 25200}
+
 if __name__ == "__main__":
     full_data = pd.read_csv("../star_tick/202101/688399.csv")
     full_data['date'] = full_data['trade_time'].apply(lambda x : parse_date(x))
     full_data['time'] = full_data['trade_time'].apply(lambda x : parse_time(x))
     full_data['log_price'] = np.log((full_data['pa1'] + full_data['pb1']) / 2)
 
-    all_days = set(full_data['date'])
+    all_days = sorted(list(set(full_data['date'])))
+    print(all_days)
+
     for day in all_days:
-        dta = full_data[full_data['date'] == day].copy()
-        dta['ret'] = dta['log_price'] - dta['log_price'].shift(-20)
-
-        dta = dta[((dta['time'] > open_time) & (dta['time'] < morning_close)) | ((dta['time'] > afternoon_open) & (dta['time'] < close_time))].copy()
-        dta = dta[~dta['ret'].isin([np.inf, -np.inf, np.nan])]
-
-        dta['signal'] = fake_factor(dta['ret'], 0.4, df=100)
-        dta['minute'] = dta['time'] // 100
-
-        print(dta)
-
-        first_second = dta.groupby(['minute']).first()['trade_time'].copy()
-        first_second = pd.DataFrame(first_second, columns=['trade_time'])
-        first_second['is_first'] = 1
-        dta = dta.merge(first_second, on='trade_time', how='left')
-
-        account = Account(per_order=200, poslimit=12000, daily_limit=None, threshold=0.0005)
-        exchange = Exchange()
-        for _, market in dta.iterrows():
-            if market['is_first'] == 1:
-                account.can_send(market['signal'], market)
-                exchange.can_fill(account, market)
-            account.will_exaust(market['signal'], market)
-            exchange.can_fill(account, market)
-        print("------------------")
-        for order in account.order_book:
-            print(order)
-            print("------------------")
-
-        pnl_result = [i.pnl for i in account.order_book]
-        print(sum(pnl_result))
-        print(account.total_pos)
-        print(account.current_pos)
-        print("------------------")
+        print(stock_simulation(full_data, day, 500, 20000, 0.4))
         break
