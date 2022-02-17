@@ -70,7 +70,7 @@ class Account():
     '''
     Functions when trading
     '''
-    def __init__(self, per_order=200, poslimit=600, daily_limit=None) -> None:
+    def __init__(self, per_order=200, poslimit=600, daily_limit=None, threshold=0.0) -> None:
         assert per_order >= 200
 
         self.current_pos = 0
@@ -79,7 +79,7 @@ class Account():
         self.order_book = []
 
         self.fee = np.log(Transaction_Cost + 1)
-        self.threshold = 0.0
+        self.threshold = threshold
 
         self.poslimit = poslimit
         self.per_order = per_order
@@ -111,14 +111,14 @@ class Account():
             if np.isnan(ask1) or ask1 == 0.0:
                 return
             new_order = Order(number=max_up, direction=1, price=ask1, send_time=send_time)
-            print(new_order)
+            #  print(new_order)
             self.order_book.append(new_order)
             return
         elif signal < -(self.fee + self.threshold):
             if np.isnan(bid1) or bid1 == 0.0:
                 return
             new_order = Order(number=-max_down, direction=-1, price=bid1, send_time=send_time)
-            print(new_order)
+            #  print(new_order)
             self.order_book.append(new_order)
             return
 
@@ -297,27 +297,27 @@ if __name__ == "__main__":
         dta['ret'] = dta['log_price'] - dta['log_price'].shift(-20)
 
         dta = dta[((dta['time'] > open_time) & (dta['time'] < morning_close)) | ((dta['time'] > afternoon_open) & (dta['time'] < close_time))].copy()
-        dta['signal'] = fake_factor(dta['ret'], 0.3)
+        dta['signal'] = fake_factor(dta['ret'], 0.3, df=6)
         dta['minute'] = dta['time'] // 100
 
-        print(dta)
+        #  print(dta)
 
         first_second = dta.groupby(['minute']).first()['trade_time'].copy()
         first_second = pd.DataFrame(first_second, columns=['trade_time'])
         first_second['is_first'] = 1
         dta = dta.merge(first_second, on='trade_time', how='left')
 
-        account = Account()
+        account = Account(per_order=200, poslimit=1200, daily_limit=None, threshold=0.0)
         exchange = Exchange()
         for _, market in dta.iterrows():
             if market['is_first'] == 1:
                 account.can_send(market['signal'], market)
                 exchange.can_fill(account, market)
             account.will_exaust(market['signal'], market)
-        print("------------------")
-        for order in account.order_book:
-            print(order)
-            print("------------------")
-        print("------------------")
+        #  print("------------------")
+        #  for order in account.order_book:
+            #  print(order)
+            #  print("------------------")
+
         pnl_result = [i.pnl for i in account.order_book]
-        break
+        print(sum(pnl_result))
