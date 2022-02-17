@@ -70,7 +70,7 @@ class Account():
     '''
     Functions when trading
     '''
-    def __init__(self, per_order=200, poslimit=600) -> None:
+    def __init__(self, per_order=200, poslimit=600, daily_limit=None) -> None:
         assert per_order >= 200
 
         self.current_pos = 0
@@ -84,7 +84,7 @@ class Account():
         self.poslimit = poslimit
         self.per_order = per_order
 
-        self.daily_limit = None
+        self.daily_limit = daily_limit
 
     def can_send(self, signal, market):
         bid1 = market['pb1']
@@ -110,17 +110,24 @@ class Account():
         if signal > (self.fee + self.threshold):
             if np.isnan(ask1) or ask1 == 0.0:
                 return
-            return Order(number=max_up, direction=1, price=ask1, send_time=send_time)
+            new_order = Order(number=max_up, direction=1, price=ask1, send_time=send_time)
+            print(new_order)
+            self.order_book.append(new_order)
+            return
         elif signal < -(self.fee + self.threshold):
             if np.isnan(bid1) or bid1 == 0.0:
                 return
-            return Order(number=-max_down, direction=-1, price=bid1, send_time=send_time)
+            new_order = Order(number=-max_down, direction=-1, price=bid1, send_time=send_time)
+            print(new_order)
+            self.order_book.append(new_order)
+            return
 
     def update_pnl(self, price):
         pass
 
     # handle if buy and sell at the same time
-    def will_exaust(self, signal, order, current_time):
+    def will_exaust(self, signal, market):
+        current_time = market['time']
         if current_time >= 145600:
             for order in self.order_book:
                 if order.status == 1:
@@ -148,7 +155,7 @@ class Exchange():
         pass
 
     # Judge by the market
-    def can_fill(self, order : Order, market):
+    def can_fill_one(self, order : Order, market):
         # 0 : Order Submitted
         # 1 : Order Filled
         # 2 : Reverse Submitted
@@ -159,8 +166,10 @@ class Exchange():
                 trade_qty = 0
                 trade_cost = 0
                 for i in range(1,6):
-                    price = "pa{}".format(i)
-                    quantity = "va{}".format(i)
+                    price = market["pa{}".format(i)]
+                    quantity = market["va{}".format(i)]
+                    if price is None or quantity is None:
+                        continue
                     if np.isnan(price) or price==0.0 or np.isnan(quantity) or quantity==0.0:
                         continue
 
@@ -169,15 +178,17 @@ class Exchange():
                     qty_left = min(order.original_number - trade_qty, quantity)
                     if qty_left <= 0:
                         break
-                    trade_qty += quantity_left
-                    trade_cost += quantity_left * price
+                    trade_qty += qty_left
+                    trade_cost += qty_left * price
                 order.current_position += trade_qty
                 order.pnl -= trade_cost
                 order.position_cost = trade_cost
                 if order.current_position != 0:
                     order.status = 1
+                    return trade_qty
                 else:
                     order.status = -1
+                    return 0
 
             if order.direction == -1:
                 # now sell
@@ -186,6 +197,8 @@ class Exchange():
                 for i in range(1,6):
                     price = market["pb{}".format(i)]
                     quantity = market["vb{}".format(i)]
+                    if price is None or quantity is None:
+                        continue
                     if np.isnan(price) or price==0.0 or np.isnan(quantity) or quantity==0.0:
                         continue
 
@@ -194,15 +207,17 @@ class Exchange():
                     qty_left = min(order.original_number - trade_qty, quantity)
                     if qty_left <= 0:
                         break
-                    trade_qty += quantity_left
-                    trade_cost += quantity_left * price
+                    trade_qty += qty_left
+                    trade_cost += qty_left * price
                 order.current_position -= trade_qty
                 order.pnl += trade_cost
                 order.position_cost = trade_cost
                 if order.current_position != 0:
                     order.status = 1
+                    return -trade_qty
                 else:
                     order.status = -1
+                    return 0
 
         if order.status == 2:
             if order.direction == -1:
@@ -212,14 +227,16 @@ class Exchange():
                 for i in range(1,6):
                     price = market["pa{}".format(i)]
                     quantity = market["va{}".format(i)]
+                    if price is None or quantity is None:
+                        continue
                     if np.isnan(price) or price==0.0 or np.isnan(quantity) or quantity==0.0:
                         continue
 
                     qty_left = min(-order.current_position - trade_qty, quantity)
                     if qty_left <= 0:
                         break
-                    trade_qty += quantity_left
-                    trade_cost += quantity_left * price
+                    trade_qty += qty_left
+                    trade_cost += qty_left * price
                 order.current_position += trade_qty
                 order.pnl -= trade_cost
                 if order.current_position == 0:
@@ -232,19 +249,27 @@ class Exchange():
                 for i in range(1,6):
                     price = market["pb{}".format(i)]
                     quantity = market["vb{}".format(i)]
+                    if price is None or quantity is None:
+                        continue
                     if np.isnan(price) or price==0.0 or np.isnan(quantity) or quantity==0.0:
                         continue
 
-                    qty_left = min(order.current - trade_qty, quantity)
+                    qty_left = min(order.current_position - trade_qty, quantity)
                     if qty_left <= 0:
                         break
-                    trade_qty += quantity_left
-                    trade_cost += quantity_left * price
+                    trade_qty += qty_left
+                    trade_cost += qty_left * price
                 order.current_position -= trade_qty
                 order.pnl += trade_cost
                 if order.current_position == 0:
                     order.status = 3
+        return 0
 
+    def can_fill(self, account, market):
+        for order in account.order_book:
+            trade_qty = self.can_fill_one(order, market)
+            account.current_pos += trade_qty
+            account.total_pos = np.abs(trade_qty)
 
 def parse_date(s):
     year = s[:4]
@@ -286,8 +311,13 @@ if __name__ == "__main__":
         exchange = Exchange()
         for _, market in dta.iterrows():
             if market['is_first'] == 1:
-                order = account.can_send(market['signal'], market)
-                if order is None:
-                    continue
-                print(order)
+                account.can_send(market['signal'], market)
+                exchange.can_fill(account, market)
+            account.will_exaust(market['signal'], market)
+        print("------------------")
+        for order in account.order_book:
+            print(order)
+            print("------------------")
+        print("------------------")
+        pnl_result = [i.pnl for i in account.order_book]
         break
