@@ -128,10 +128,11 @@ class Account():
     # handle if buy and sell at the same time
     def will_exaust(self, signal, market):
         current_time = market['time']
-        if current_time >= 145600:
+        if current_time >= 145000:
             for order in self.order_book:
                 if order.status == 1:
                     order.status = 2
+            return
 
         for order in self.order_book:
             if order.status != 1:
@@ -139,13 +140,13 @@ class Account():
             if second_diff(order.send_time, current_time) < 60:
                 continue
             if order.direction == 1:
-                if signal > self.threshold:
+                if signal > self.threshold + self.fee:
                     order.send_time = current_time
                 else:
                     order.status = 2
                 continue
             if order.direction == -1:
-                if signal < -self.threshold:
+                if signal < -self.threshold - self.fee:
                     order.send_time = current_time
                 else:
                     order.status = 2
@@ -165,7 +166,7 @@ class Exchange():
                 # now buy
                 trade_qty = 0
                 trade_cost = 0
-                for i in range(1,6):
+                for i in range(1, 6):
                     price = market["pa{}".format(i)]
                     quantity = market["va{}".format(i)]
                     if price is None or quantity is None:
@@ -194,7 +195,7 @@ class Exchange():
                 # now sell
                 trade_qty = 0
                 trade_cost = 0
-                for i in range(1,6):
+                for i in range(1, 6):
                     price = market["pb{}".format(i)]
                     quantity = market["vb{}".format(i)]
                     if price is None or quantity is None:
@@ -217,14 +218,15 @@ class Exchange():
                     return -trade_qty
                 else:
                     order.status = -1
-                    return 0
+        return 0
 
+    def fill_market(self, order : Order, market):
         if order.status == 2:
             if order.direction == -1:
                 # now buy
                 trade_qty = 0
                 trade_cost = 0
-                for i in range(1,6):
+                for i in range(1, 6):
                     price = market["pa{}".format(i)]
                     quantity = market["va{}".format(i)]
                     if price is None or quantity is None:
@@ -241,12 +243,13 @@ class Exchange():
                 order.pnl -= trade_cost
                 if order.current_position == 0:
                     order.status = 3
+                return trade_qty
 
             if order.direction == 1:
                 # now sell
                 trade_qty = 0
                 trade_cost = 0
-                for i in range(1,6):
+                for i in range(1, 6):
                     price = market["pb{}".format(i)]
                     quantity = market["vb{}".format(i)]
                     if price is None or quantity is None:
@@ -263,13 +266,18 @@ class Exchange():
                 order.pnl += trade_cost
                 if order.current_position == 0:
                     order.status = 3
+                return -trade_qty
         return 0
 
     def can_fill(self, account, market):
         for order in account.order_book:
-            trade_qty = self.can_fill_one(order, market)
-            account.current_pos += trade_qty
-            account.total_pos = np.abs(trade_qty)
+            if order.status == 0:
+                trade_qty = self.can_fill_one(order, market)
+                account.current_pos += trade_qty
+                account.total_pos += np.abs(trade_qty)
+            if order.status == 2:
+                trade_qty = self.fill_market(order, market)
+                account.current_pos += trade_qty
 
 def parse_date(s):
     year = s[:4]
@@ -289,7 +297,7 @@ if __name__ == "__main__":
     full_data = pd.read_csv("../star_tick/202101/688399.csv")
     full_data['date'] = full_data['trade_time'].apply(lambda x : parse_date(x))
     full_data['time'] = full_data['trade_time'].apply(lambda x : parse_time(x))
-    full_data['log_price'] = np.log(full_data['last_price'])
+    full_data['log_price'] = np.log((full_data['pa1'] + full_data['pb1']) / 2)
 
     all_days = set(full_data['date'])
     for day in all_days:
@@ -297,27 +305,34 @@ if __name__ == "__main__":
         dta['ret'] = dta['log_price'] - dta['log_price'].shift(-20)
 
         dta = dta[((dta['time'] > open_time) & (dta['time'] < morning_close)) | ((dta['time'] > afternoon_open) & (dta['time'] < close_time))].copy()
-        dta['signal'] = fake_factor(dta['ret'], 0.3, df=6)
+        dta = dta[~dta['ret'].isin([np.inf, -np.inf, np.nan])]
+
+        dta['signal'] = fake_factor(dta['ret'], 0.4, df=100)
         dta['minute'] = dta['time'] // 100
 
-        #  print(dta)
+        print(dta)
 
         first_second = dta.groupby(['minute']).first()['trade_time'].copy()
         first_second = pd.DataFrame(first_second, columns=['trade_time'])
         first_second['is_first'] = 1
         dta = dta.merge(first_second, on='trade_time', how='left')
 
-        account = Account(per_order=200, poslimit=1200, daily_limit=None, threshold=0.0)
+        account = Account(per_order=200, poslimit=12000, daily_limit=None, threshold=0.0005)
         exchange = Exchange()
         for _, market in dta.iterrows():
             if market['is_first'] == 1:
                 account.can_send(market['signal'], market)
                 exchange.can_fill(account, market)
             account.will_exaust(market['signal'], market)
-        #  print("------------------")
-        #  for order in account.order_book:
-            #  print(order)
-            #  print("------------------")
+            exchange.can_fill(account, market)
+        print("------------------")
+        for order in account.order_book:
+            print(order)
+            print("------------------")
 
         pnl_result = [i.pnl for i in account.order_book]
         print(sum(pnl_result))
+        print(account.total_pos)
+        print(account.current_pos)
+        print("------------------")
+        break
